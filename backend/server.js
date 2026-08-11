@@ -4,7 +4,11 @@ const cors    = require('cors');
 const { authRouter, shopsRouter, usersRouter, productsRouter, sellingRouter, repairRouter, dashRouter } = require('./routes/index');
 
 const app = express();
-app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173' }));
+app.use(cors({ 
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 app.use('/api/auth',             authRouter);
