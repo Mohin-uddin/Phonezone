@@ -31,14 +31,10 @@ export default function SellingInvoice() {
 
   // Load products — admin gets all shops, manager gets own shop
   useEffect(() => {
-    if (user?.role === 'admin') {
-      // fetch all products (no shop filter) or per selected shop
-      api.get('/products', { params: form.shop_id ? { shop_id: form.shop_id } : {} })
-        .then(r => setProducts(r.data));
-    } else {
-      api.get('/products').then(r => setProducts(r.data));
-    }
-  }, [form.shop_id, user]);
+  if (!form.shop_id) return;
+  api.get('/products', { params: { shop_id: form.shop_id } })
+    .then(r => setProducts(r.data));
+}, [form.shop_id, user]);
 
   const subtotal   = items.reduce((s,i) => s + i.unit_price * i.qty, 0);
   const grandTotal = subtotal - Number(form.discount);
@@ -133,9 +129,9 @@ export default function SellingInvoice() {
   }
 
   const paymentOpts = lang === 'it'
-    ? [{v:'contanti',l:'Contanti'},{v:'carta',l:'Carta'},{v:'bkash',l:'bKash'},{v:'nagad',l:'Nagad'}]
-    : [{v:'cash',l:'Cash'},{v:'card',l:'Card'},{v:'bkash',l:'bKash'},{v:'nagad',l:'Nagad'}];
-
+  ? [{v:'cash',l:'Contanti'},{v:'card',l:'Carta'},{v:'bkash',l:'bKash'},{v:'nagad',l:'Nagad'}]
+  : [{v:'cash',l:'Cash'},{v:'card',l:'Card'},{v:'bkash',l:'bKash'},{v:'nagad',l:'Nagad'}];
+  
   return (
     <div style={{ display:'grid', gridTemplateColumns:'1.2fr 1fr', gap:'1.25rem' }}>
       <form onSubmit={handleGenerate}>

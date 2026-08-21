@@ -20,5 +20,20 @@ app.use('/api/repair-invoices',  repairRouter);
 app.use('/api/dashboard',        dashRouter);
 app.get('/api/health', (_, res) => res.json({ status: 'ok', app: 'Phonezone' }));
 
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Global error:', err);
+  res.status(500).json({ message: 'Server error' });
+});
+
+// Prevent server crash on unhandled errors  
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err);
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Phonezone backend running on http://localhost:${PORT}`));
