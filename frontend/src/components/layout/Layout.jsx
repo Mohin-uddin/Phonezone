@@ -16,6 +16,9 @@ export default function Layout() {
     '/history':         t.invoiceHistory,
     '/shops':           t.shops,
     '/users':           t.users,
+    '/reports':   'Reports & Analytics',
+'/stock':     'Stock Management',
+'/customers': 'Customers',
   };
 
   return (

@@ -52,6 +52,7 @@ function downloadBarcode(value) {
 export default function Products() {
   const { user } = useAuth();
   const { t } = useLang();
+  const [search, setSearch] = useState('');
   const [products, setProducts] = useState([]);
   const [shops,    setShops]    = useState([]);
   const [shopId,   setShopId]   = useState('');
@@ -69,7 +70,15 @@ export default function Products() {
     {v:'accessory',  label:t.categories.accessory},
   ];
 
-  const load = () => api.get('/products', { params:{shop_id:shopId||undefined, category:cat||undefined} }).then(r=>setProducts(r.data));
+  const load = () => api.get('/products', { 
+  params: { 
+    shop_id: shopId || undefined, 
+    category: cat || undefined,
+    search: search || undefined 
+  } 
+}).then(r => setProducts(r.data));
+
+useEffect(() => { load(); }, [shopId, cat, search]);
   useEffect(()=>{load();},[shopId,cat]);
   useEffect(()=>{api.get('/shops').then(r=>setShops(r.data));},[]);
 
@@ -102,7 +111,15 @@ export default function Products() {
           </>
         )}
         {CATS.map(c=><button key={c.v} className={`filter-tab ${cat===c.v?'active':''}`} onClick={()=>setCat(c.v)}>{c.label}</button>)}
-        <button className="btn btn-primary btn-sm" style={{marginLeft:'auto'}} onClick={openAdd}><i className="ti ti-plus"/>{t.addProduct}</button>
+        
+        <input
+          type="text"
+          placeholder={t.searchProducts}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ width: 200, marginLeft: 'auto' }}
+        />
+        <button className="btn btn-primary btn-sm" onClick={openAdd}><i className="ti ti-plus"/>{t.addProduct}</button>
       </div>
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:12}}>
@@ -117,8 +134,8 @@ export default function Products() {
             </div>
             {user?.role==='admin' && <div style={{fontSize:10,color:'var(--muted)',marginBottom:6}}>{p.shop_name}</div>}
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-              <span style={{fontWeight:700,color:'var(--accent2)',fontSize:14}}>€ {Number(p.sell_price).toLocaleString()}</span>
-              <span style={{fontSize:11,color:'var(--muted)',textDecoration:'line-through'}}>€ {Number(p.cost_price).toLocaleString()}</span>
+             <span style={{fontWeight:700,color:'var(--accent2)',fontSize:14}}>€ {Number(p.sell_price).toLocaleString()}</span>
+<span style={{fontSize:11,color:'var(--muted)'}}>Cost: € {Number(p.cost_price).toLocaleString()}</span>
             </div>
             {/* Barcode */}
             {p.barcode && (

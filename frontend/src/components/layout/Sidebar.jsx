@@ -16,10 +16,13 @@ export default function Sidebar() {
     { to:'/history',                   icon:'ti-history',           label:t.invoiceHistory, section:'Invoices' },
     { to:'/shops',  adminOnly:true,    icon:'ti-building-store',    label:t.shops,          section:'Settings' },
     { to:'/users',  adminOnly:true,    icon:'ti-users',             label:t.users,          section:'Settings' },
+    { to:'/reports',   icon:'ti-chart-bar',  label:'Reports',   section:'Analytics' },
+{ to:'/stock',     icon:'ti-box',        label:'Stock',      section:'Analytics' },
+{ to:'/customers', icon:'ti-users',      label:'Customers',  section:'Analytics' },
   ];
 
   const filtered = navItems.filter(i => !i.adminOnly || user?.role==='admin');
-  const sections = ['Main','Invoices','Settings'];
+  const sections = ['Main', 'Analytics', 'Invoices', 'Settings'];
 
   function handleLogout() { logout(); toast.success(t.logout); navigate('/login'); }
 

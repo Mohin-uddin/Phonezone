@@ -9,6 +9,9 @@ import RepairInvoice  from './pages/RepairInvoice';
 import { InvoiceHistory } from './pages/OtherPages';
 import { Shops }          from './pages/OtherPages';
 import { Users }          from './pages/OtherPages';
+import Reports     from './pages/Reports';
+import StockManager from './pages/StockManager';
+import Customers   from './pages/Customers';
 
 function Guard({ children }) {
   const { user } = useAuth();
@@ -28,6 +31,9 @@ export default function App() {
         <Route path="history"         element={<InvoiceHistory />} />
         <Route path="shops"           element={<Shops />} />
         <Route path="users"           element={<Users />} />
+        <Route path="reports"   element={<Reports />} />
+<Route path="stock"     element={<StockManager />} />
+<Route path="customers" element={<Customers />} />
       </Route>
     </Routes>
   );
