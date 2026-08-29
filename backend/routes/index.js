@@ -110,6 +110,7 @@ productsRouter.get('/', auth, async (req, res) => {
   else if (shop_id)              { q+=' AND p.shop_id=?'; params.push(shop_id); }
   if (category) { q+=' AND p.category=?'; params.push(category); }
   if (barcode)  { q+=' AND p.barcode=?';  params.push(barcode); }
+  if (req.query.search) { q += ' AND p.name LIKE ?'; params.push(`%${req.query.search}%`); }
   q+=' ORDER BY p.name';
   const [rows] = await pool.query(q, params);
   res.json(rows);
