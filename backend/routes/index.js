@@ -311,49 +311,49 @@ dashRouter.get('/', auth, async (req, res) => {
   res.json({ today_revenue: Number(sr)+Number(rr), total_invoices: ti, pending_repairs: pr, low_stock: ls, shop_stats: shopStats });
 });
 
-
-// ─── REPORTS / ANALYTICS ───────────────────────────────────────────────────
 const reportsRouter = require('express').Router();
 
 reportsRouter.get('/sales', auth, async (req, res) => {
   const { period = 'daily', shop_id } = req.query;
   const isAdmin = req.user.role === 'admin';
   const sid = isAdmin ? (shop_id || null) : req.user.shop_id;
-  const sc = sid ? `AND shop_id=${pool.escape(sid)}` : '';
+  const sc = sid ? `AND si.shop_id=${pool.escape(sid)}` : '';
 
-  let groupBy, dateFormat, days;
-  if (period === 'daily')   { groupBy = 'DATE(created_at)'; dateFormat = '%Y-%m-%d'; days = 30; }
-  if (period === 'weekly')  { groupBy = 'YEARWEEK(created_at,1)'; dateFormat = '%Y-%u'; days = 84; }
-  if (period === 'monthly') { groupBy = 'DATE_FORMAT(created_at,"%Y-%m")'; dateFormat = '%Y-%m'; days = 365; }
+  let groupBy, days;
+  if (period === 'weekly')  { groupBy = 'YEARWEEK(si.created_at,1)'; days = 84; }
+  else if (period === 'monthly') { groupBy = 'DATE_FORMAT(si.created_at,"%Y-%m")'; days = 365; }
+  else { groupBy = 'DATE(si.created_at)'; days = 30; }
 
-  const dateFilter = `AND created_at >= DATE_SUB(NOW(), INTERVAL ${days} DAY)`;
+  const dateFilter = `AND si.created_at >= DATE_SUB(NOW(), INTERVAL ${days} DAY)`;
+
+  const scSell = sid ? `AND shop_id=${pool.escape(sid)}` : '';
+  const dateFilterSell = `AND created_at >= DATE_SUB(NOW(), INTERVAL ${days} DAY)`;
+  const groupBySell = groupBy.replace(/si\./g, '');
 
   const [sellRows] = await pool.query(
-    `SELECT ${groupBy} AS period,
+    `SELECT ${groupBySell} AS period,
             COALESCE(SUM(grand_total),0) AS revenue,
-            COALESCE(SUM(grand_total - discount),0) AS net,
             COUNT(*) AS count
-     FROM selling_invoices WHERE 1=1 ${sc} ${dateFilter}
-     GROUP BY ${groupBy} ORDER BY period DESC`, []
+     FROM selling_invoices WHERE 1=1 ${scSell} ${dateFilterSell}
+     GROUP BY ${groupBySell} ORDER BY period DESC`
   );
 
   const [repairRows] = await pool.query(
-    `SELECT ${groupBy} AS period,
+    `SELECT ${groupBySell} AS period,
             COALESCE(SUM(grand_total),0) AS revenue,
             COUNT(*) AS count
-     FROM repair_invoices WHERE 1=1 ${sc} ${dateFilter}
-     GROUP BY ${groupBy} ORDER BY period DESC`, []
+     FROM repair_invoices WHERE 1=1 ${scSell} ${dateFilterSell}
+     GROUP BY ${groupBySell} ORDER BY period DESC`
   );
 
-  // Profit calculation (sell revenue - cost)
   const [profitRows] = await pool.query(
     `SELECT ${groupBy} AS period,
             COALESCE(SUM((sii.unit_price - p.cost_price) * sii.qty),0) AS profit
      FROM selling_invoice_items sii
      JOIN selling_invoices si ON sii.invoice_id = si.id
      JOIN products p ON sii.product_id = p.id
-     WHERE 1=1 ${sc.replace(/shop_id/g,'si.shop_id')} ${dateFilter.replace(/created_at/g,'si.created_at')}
-     GROUP BY ${groupBy.replace(/created_at/g,'si.created_at')} ORDER BY period DESC`, []
+     WHERE 1=1 ${sc} ${dateFilter}
+     GROUP BY ${groupBy} ORDER BY period DESC`
   );
 
   res.json({ selling: sellRows, repair: repairRows, profit: profitRows });
@@ -364,31 +364,33 @@ reportsRouter.get('/summary', auth, async (req, res) => {
   const sid = isAdmin ? (req.query.shop_id || null) : req.user.shop_id;
   const sc = sid ? `AND shop_id=${pool.escape(sid)}` : '';
 
-  const [[{ total_sell }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS total_sell FROM selling_invoices WHERE 1=1 ${sc}`);
+  const [[{ total_sell }]]   = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS total_sell FROM selling_invoices WHERE 1=1 ${sc}`);
   const [[{ total_repair }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS total_repair FROM repair_invoices WHERE 1=1 ${sc}`);
+
+  const scProfit = sid ? `AND si.shop_id=${pool.escape(sid)}` : '';
   const [[{ total_cost }]] = await pool.query(
-    `SELECT COALESCE(SUM(sii.unit_price * sii.qty - (p.cost_price * sii.qty)),0) AS total_cost
+    `SELECT COALESCE(SUM((sii.unit_price - p.cost_price) * sii.qty),0) AS total_cost
      FROM selling_invoice_items sii
      JOIN selling_invoices si ON sii.invoice_id=si.id
      JOIN products p ON sii.product_id=p.id
-     WHERE 1=1 ${sc.replace(/shop_id/g,'si.shop_id')}`
+     WHERE 1=1 ${scProfit}`
   );
 
   const today = new Date().toISOString().split('T')[0];
-  const [[{ today_sell }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS today_sell FROM selling_invoices WHERE DATE(created_at)=? ${sc}`, [today]);
-  const [[{ today_repair }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS today_repair FROM repair_invoices WHERE DATE(created_at)=? ${sc}`, [today]);
-
   const thisMonth = today.slice(0, 7);
-  const [[{ month_sell }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS month_sell FROM selling_invoices WHERE DATE_FORMAT(created_at,'%Y-%m')=? ${sc}`, [thisMonth]);
+
+  const [[{ today_sell }]]   = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS today_sell FROM selling_invoices WHERE DATE(created_at)=? ${sc}`, [today]);
+  const [[{ today_repair }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS today_repair FROM repair_invoices WHERE DATE(created_at)=? ${sc}`, [today]);
+  const [[{ month_sell }]]   = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS month_sell FROM selling_invoices WHERE DATE_FORMAT(created_at,'%Y-%m')=? ${sc}`, [thisMonth]);
   const [[{ month_repair }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS month_repair FROM repair_invoices WHERE DATE_FORMAT(created_at,'%Y-%m')=? ${sc}`, [thisMonth]);
 
   res.json({
-    total_revenue: Number(total_sell) + Number(total_repair),
-    total_profit: Number(total_cost),
-    today_revenue: Number(today_sell) + Number(today_repair),
-    month_revenue: Number(month_sell) + Number(month_repair),
-    selling_revenue: Number(total_sell),
-    repair_revenue: Number(total_repair),
+    total_revenue:    Number(total_sell) + Number(total_repair),
+    total_profit:     Number(total_cost),
+    today_revenue:    Number(today_sell) + Number(today_repair),
+    month_revenue:    Number(month_sell) + Number(month_repair),
+    selling_revenue:  Number(total_sell),
+    repair_revenue:   Number(total_repair),
   });
 });
 
