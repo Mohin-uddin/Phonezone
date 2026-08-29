@@ -310,4 +310,169 @@ dashRouter.get('/', auth, async (req, res) => {
   res.json({ today_revenue: Number(sr)+Number(rr), total_invoices: ti, pending_repairs: pr, low_stock: ls, shop_stats: shopStats });
 });
 
-module.exports = { authRouter, shopsRouter, usersRouter, productsRouter, sellingRouter, repairRouter, dashRouter };
+
+// ─── REPORTS / ANALYTICS ───────────────────────────────────────────────────
+const reportsRouter = require('express').Router();
+
+reportsRouter.get('/sales', auth, async (req, res) => {
+  const { period = 'daily', shop_id } = req.query;
+  const isAdmin = req.user.role === 'admin';
+  const sid = isAdmin ? (shop_id || null) : req.user.shop_id;
+  const sc = sid ? `AND shop_id=${pool.escape(sid)}` : '';
+
+  let groupBy, dateFormat, days;
+  if (period === 'daily')   { groupBy = 'DATE(created_at)'; dateFormat = '%Y-%m-%d'; days = 30; }
+  if (period === 'weekly')  { groupBy = 'YEARWEEK(created_at,1)'; dateFormat = '%Y-%u'; days = 84; }
+  if (period === 'monthly') { groupBy = 'DATE_FORMAT(created_at,"%Y-%m")'; dateFormat = '%Y-%m'; days = 365; }
+
+  const dateFilter = `AND created_at >= DATE_SUB(NOW(), INTERVAL ${days} DAY)`;
+
+  const [sellRows] = await pool.query(
+    `SELECT ${groupBy} AS period,
+            COALESCE(SUM(grand_total),0) AS revenue,
+            COALESCE(SUM(grand_total - discount),0) AS net,
+            COUNT(*) AS count
+     FROM selling_invoices WHERE 1=1 ${sc} ${dateFilter}
+     GROUP BY ${groupBy} ORDER BY period DESC`, []
+  );
+
+  const [repairRows] = await pool.query(
+    `SELECT ${groupBy} AS period,
+            COALESCE(SUM(grand_total),0) AS revenue,
+            COUNT(*) AS count
+     FROM repair_invoices WHERE 1=1 ${sc} ${dateFilter}
+     GROUP BY ${groupBy} ORDER BY period DESC`, []
+  );
+
+  // Profit calculation (sell revenue - cost)
+  const [profitRows] = await pool.query(
+    `SELECT ${groupBy} AS period,
+            COALESCE(SUM((sii.unit_price - p.cost_price) * sii.qty),0) AS profit
+     FROM selling_invoice_items sii
+     JOIN selling_invoices si ON sii.invoice_id = si.id
+     JOIN products p ON sii.product_id = p.id
+     WHERE 1=1 ${sc.replace(/shop_id/g,'si.shop_id')} ${dateFilter.replace(/created_at/g,'si.created_at')}
+     GROUP BY ${groupBy.replace(/created_at/g,'si.created_at')} ORDER BY period DESC`, []
+  );
+
+  res.json({ selling: sellRows, repair: repairRows, profit: profitRows });
+});
+
+reportsRouter.get('/summary', auth, async (req, res) => {
+  const isAdmin = req.user.role === 'admin';
+  const sid = isAdmin ? (req.query.shop_id || null) : req.user.shop_id;
+  const sc = sid ? `AND shop_id=${pool.escape(sid)}` : '';
+
+  const [[{ total_sell }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS total_sell FROM selling_invoices WHERE 1=1 ${sc}`);
+  const [[{ total_repair }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS total_repair FROM repair_invoices WHERE 1=1 ${sc}`);
+  const [[{ total_cost }]] = await pool.query(
+    `SELECT COALESCE(SUM(sii.unit_price * sii.qty - (p.cost_price * sii.qty)),0) AS total_cost
+     FROM selling_invoice_items sii
+     JOIN selling_invoices si ON sii.invoice_id=si.id
+     JOIN products p ON sii.product_id=p.id
+     WHERE 1=1 ${sc.replace(/shop_id/g,'si.shop_id')}`
+  );
+
+  const today = new Date().toISOString().split('T')[0];
+  const [[{ today_sell }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS today_sell FROM selling_invoices WHERE DATE(created_at)=? ${sc}`, [today]);
+  const [[{ today_repair }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS today_repair FROM repair_invoices WHERE DATE(created_at)=? ${sc}`, [today]);
+
+  const thisMonth = today.slice(0, 7);
+  const [[{ month_sell }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS month_sell FROM selling_invoices WHERE DATE_FORMAT(created_at,'%Y-%m')=? ${sc}`, [thisMonth]);
+  const [[{ month_repair }]] = await pool.query(`SELECT COALESCE(SUM(grand_total),0) AS month_repair FROM repair_invoices WHERE DATE_FORMAT(created_at,'%Y-%m')=? ${sc}`, [thisMonth]);
+
+  res.json({
+    total_revenue: Number(total_sell) + Number(total_repair),
+    total_profit: Number(total_cost),
+    today_revenue: Number(today_sell) + Number(today_repair),
+    month_revenue: Number(month_sell) + Number(month_repair),
+    selling_revenue: Number(total_sell),
+    repair_revenue: Number(total_repair),
+  });
+});
+
+// ─── STOCK ─────────────────────────────────────────────────────────────────
+const stockRouter = require('express').Router();
+
+stockRouter.get('/alerts', auth, async (req, res) => {
+  const isAdmin = req.user.role === 'admin';
+  const sid = isAdmin ? (req.query.shop_id || null) : req.user.shop_id;
+  const sc = sid ? `AND p.shop_id=${pool.escape(sid)}` : '';
+  const [rows] = await pool.query(
+    `SELECT p.*, s.name AS shop_name FROM products p
+     JOIN shops s ON p.shop_id=s.id
+     WHERE p.stock<=5 AND p.is_active=1 ${sc}
+     ORDER BY p.stock ASC`
+  );
+  res.json(rows);
+});
+
+stockRouter.get('/history/:productId', auth, async (req, res) => {
+  const [rows] = await pool.query(
+    `SELECT 'sell' AS type, si.created_at, sii.qty, c.name AS customer_name,
+            si.invoice_no
+     FROM selling_invoice_items sii
+     JOIN selling_invoices si ON sii.invoice_id=si.id
+     JOIN customers c ON si.customer_id=c.id
+     WHERE sii.product_id=?
+     UNION ALL
+     SELECT 'repair' AS type, ri.created_at, rip.qty, c.name AS customer_name,
+            ri.invoice_no
+     FROM repair_invoice_parts rip
+     JOIN repair_invoices ri ON rip.invoice_id=ri.id
+     JOIN customers c ON ri.customer_id=c.id
+     WHERE rip.product_id=?
+     ORDER BY created_at DESC LIMIT 50`,
+    [req.params.productId, req.params.productId]
+  );
+  res.json(rows);
+});
+
+stockRouter.patch('/adjust/:productId', auth, async (req, res) => {
+  const { quantity, reason } = req.body;
+  if (quantity === undefined) return res.status(400).json({ message: 'quantity required' });
+  await pool.query(
+    'UPDATE products SET stock=GREATEST(0, stock+?) WHERE id=?',
+    [parseInt(quantity), req.params.productId]
+  );
+  const [[product]] = await pool.query('SELECT stock FROM products WHERE id=?', [req.params.productId]);
+  res.json({ message: 'Stock updated', new_stock: product.stock });
+});
+
+// ─── CUSTOMERS ─────────────────────────────────────────────────────────────
+const customersRouter = require('express').Router();
+
+customersRouter.get('/', auth, async (req, res) => {
+  const { search } = req.query;
+  let q = `SELECT c.*,
+    COUNT(DISTINCT si.id) AS sell_count,
+    COUNT(DISTINCT ri.id) AS repair_count,
+    COALESCE(SUM(si.grand_total),0) + COALESCE(SUM(ri.grand_total),0) AS total_spent
+    FROM customers c
+    LEFT JOIN selling_invoices si ON si.customer_id=c.id
+    LEFT JOIN repair_invoices ri ON ri.customer_id=c.id
+    WHERE 1=1`;
+  const params = [];
+  if (search) { q += ' AND (c.name LIKE ? OR c.phone LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
+  q += ' GROUP BY c.id ORDER BY total_spent DESC';
+  const [rows] = await pool.query(q, params);
+  res.json(rows);
+});
+
+customersRouter.get('/:id/history', auth, async (req, res) => {
+  const [sells] = await pool.query(
+    `SELECT si.id, si.invoice_no, si.grand_total, si.created_at, 'sell' AS type, s.name AS shop_name
+     FROM selling_invoices si JOIN shops s ON si.shop_id=s.id
+     WHERE si.customer_id=? ORDER BY si.created_at DESC`, [req.params.id]
+  );
+  const [repairs] = await pool.query(
+    `SELECT ri.id, ri.invoice_no, ri.grand_total, ri.created_at, 'repair' AS type,
+            ri.device_model, ri.status, s.name AS shop_name
+     FROM repair_invoices ri JOIN shops s ON ri.shop_id=s.id
+     WHERE ri.customer_id=? ORDER BY ri.created_at DESC`, [req.params.id]
+  );
+  const [[customer]] = await pool.query('SELECT * FROM customers WHERE id=?', [req.params.id]);
+  res.json({ customer, sells, repairs });
+});
+
+module.exports = { authRouter, shopsRouter, usersRouter, productsRouter, sellingRouter, repairRouter, dashRouter, reportsRouter, stockRouter, customersRouter };
