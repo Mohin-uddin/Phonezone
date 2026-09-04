@@ -12,6 +12,7 @@ import { Users }          from './pages/OtherPages';
 import Reports     from './pages/Reports';
 import StockManager from './pages/StockManager';
 import Customers   from './pages/Customers';
+import Wholesale from './pages/Wholesale';
 
 function Guard({ children }) {
   const { user } = useAuth();
@@ -27,6 +28,7 @@ export default function App() {
         <Route index                  element={<Dashboard />} />
         <Route path="products"        element={<Products />} />
         <Route path="selling-invoice" element={<SellingInvoice />} />
+        <Route path="wholesale" element={<Wholesale />} />
         <Route path="repair-invoice"  element={<RepairInvoice />} />
         <Route path="history"         element={<InvoiceHistory />} />
         <Route path="shops"           element={<Shops />} />

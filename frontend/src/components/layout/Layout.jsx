@@ -12,6 +12,7 @@ export default function Layout() {
     '/':                t.dashboard,
     '/products':        t.products,
     '/selling-invoice': t.sellingInvoice,
+    '/wholesale': 'Wholesale Orders',
     '/repair-invoice':  t.repairInvoice,
     '/history':         t.invoiceHistory,
     '/shops':           t.shops,

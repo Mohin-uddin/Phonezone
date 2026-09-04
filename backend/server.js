@@ -1,8 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors    = require('cors');
-const { authRouter, shopsRouter, usersRouter, productsRouter, sellingRouter, repairRouter, dashRouter, reportsRouter, stockRouter, customersRouter } = require('./routes/index');
-
+const { authRouter, shopsRouter, usersRouter, productsRouter, sellingRouter, repairRouter, dashRouter, reportsRouter, stockRouter, customersRouter, wholesaleRouter } = require('./routes/index');
 const app = express();
 app.use(cors({ 
   origin: '*',
@@ -22,6 +21,7 @@ app.get('/api/health', (_, res) => res.json({ status: 'ok', app: 'Phonezone' }))
 app.use('/api/reports',   reportsRouter);
 app.use('/api/stock',     stockRouter);
 app.use('/api/customers', customersRouter);
+app.use('/api/wholesale', wholesaleRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {

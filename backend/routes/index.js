@@ -478,4 +478,173 @@ customersRouter.get('/:id/history', auth, async (req, res) => {
   res.json({ customer, sells, repairs });
 });
 
-module.exports = { authRouter, shopsRouter, usersRouter, productsRouter, sellingRouter, repairRouter, dashRouter, reportsRouter, stockRouter, customersRouter };
+// ─── WHOLESALE ─────────────────────────────────────────────────────────────
+const wholesaleRouter = require('express').Router();
+
+// Create wholesale order
+wholesaleRouter.post('/', auth, async (req, res) => {
+  const { customer_name, customer_phone, shop_id, items, discount = 0, paid_amount = 0, payment_method = 'cash', notes } = req.body;
+  if (!items || items.length === 0) return res.status(400).json({ message: 'No items' });
+
+  try {
+    // Find or create customer
+    let [[customer]] = await pool.query('SELECT id FROM customers WHERE phone=?', [customer_phone]);
+    if (!customer) {
+      const [r] = await pool.query('INSERT INTO customers (name, phone) VALUES (?,?)', [customer_name, customer_phone]);
+      customer = { id: r.insertId };
+    }
+
+    // Calculate totals
+    let subtotal = 0;
+    const enriched = [];
+    for (const item of items) {
+      const [[p]] = await pool.query('SELECT * FROM products WHERE id=?', [item.product_id]);
+      if (!p) return res.status(404).json({ message: `Product not found: ${item.product_id}` });
+      if (p.stock < item.qty) return res.status(409).json({ message: `Insufficient stock: ${p.name}` });
+      const unit_price = item.unit_price || Number(p.sell_price);
+      const total_price = unit_price * item.qty;
+      subtotal += total_price;
+      enriched.push({ ...item, product_name: p.name, unit_price, total_price });
+    }
+
+    const grand_total = subtotal - Number(discount);
+    const remaining_amount = grand_total - Number(paid_amount);
+    const payment_status = Number(paid_amount) >= grand_total ? 'full' : Number(paid_amount) > 0 ? 'half' : 'pending';
+
+    const order_no = `WS-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
+
+    const [orderResult] = await pool.query(
+      `INSERT INTO wholesale_orders (order_no, customer_id, shop_id, subtotal, discount, grand_total, paid_amount, remaining_amount, payment_status, payment_method, notes, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [order_no, customer.id, shop_id, subtotal, discount, grand_total, paid_amount, remaining_amount, payment_status, payment_method, notes, req.user.id]
+    );
+    const order_id = orderResult.insertId;
+
+    // Insert items and decrement stock
+    for (const item of enriched) {
+      await pool.query(
+        `INSERT INTO wholesale_order_items (order_id, product_id, product_name, qty, unit_price, total_price) VALUES (?,?,?,?,?,?)`,
+        [order_id, item.product_id, item.product_name, item.qty, item.unit_price, item.total_price]
+      );
+      await pool.query('UPDATE products SET stock=stock-? WHERE id=?', [item.qty, item.product_id]);
+    }
+
+    // Record payment if any
+    if (Number(paid_amount) > 0) {
+      await pool.query(
+        'INSERT INTO wholesale_payments (order_id, amount, payment_method) VALUES (?,?,?)',
+        [order_id, paid_amount, payment_method]
+      );
+    }
+
+    res.json({ id: order_id, order_no, grand_total, remaining_amount, payment_status });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to create wholesale order' });
+  }
+});
+
+// List wholesale orders
+wholesaleRouter.get('/', auth, async (req, res) => {
+  const { shop_id, status } = req.query;
+  const isAdmin = req.user.role === 'admin';
+  const sid = isAdmin ? (shop_id || null) : req.user.shop_id;
+  let q = `SELECT wo.*, c.name AS customer_name, c.phone AS customer_phone, s.name AS shop_name
+           FROM wholesale_orders wo
+           JOIN customers c ON wo.customer_id=c.id
+           JOIN shops s ON wo.shop_id=s.id
+           WHERE 1=1`;
+  const params = [];
+  if (sid) { q += ' AND wo.shop_id=?'; params.push(sid); }
+  if (status) { q += ' AND wo.payment_status=?'; params.push(status); }
+  q += ' ORDER BY wo.created_at DESC';
+  const [rows] = await pool.query(q, params);
+  res.json(rows);
+});
+
+// Get single wholesale order with items
+wholesaleRouter.get('/:id', auth, async (req, res) => {
+  const [[order]] = await pool.query(
+    `SELECT wo.*, c.name AS customer_name, c.phone AS customer_phone, s.name AS shop_name
+     FROM wholesale_orders wo
+     JOIN customers c ON wo.customer_id=c.id
+     JOIN shops s ON wo.shop_id=s.id
+     WHERE wo.id=?`, [req.params.id]
+  );
+  if (!order) return res.status(404).json({ message: 'Not found' });
+
+  const [items] = await pool.query('SELECT * FROM wholesale_order_items WHERE order_id=?', [req.params.id]);
+  const [payments] = await pool.query('SELECT * FROM wholesale_payments WHERE order_id=? ORDER BY paid_at DESC', [req.params.id]);
+  const [returns] = await pool.query(
+    `SELECT wr.*, woi.product_name FROM wholesale_returns wr
+     JOIN wholesale_order_items woi ON wr.item_id=woi.id
+     WHERE wr.order_id=? ORDER BY wr.returned_at DESC`, [req.params.id]
+  );
+
+  res.json({ ...order, items, payments, returns });
+});
+
+// Add payment to existing order
+wholesaleRouter.post('/:id/payments', auth, async (req, res) => {
+  const { amount, payment_method = 'cash', note } = req.body;
+  const [[order]] = await pool.query('SELECT * FROM wholesale_orders WHERE id=?', [req.params.id]);
+  if (!order) return res.status(404).json({ message: 'Not found' });
+
+  await pool.query(
+    'INSERT INTO wholesale_payments (order_id, amount, payment_method, note) VALUES (?,?,?,?)',
+    [req.params.id, amount, payment_method, note]
+  );
+
+  const new_paid = Number(order.paid_amount) + Number(amount);
+  const new_remaining = Math.max(0, Number(order.grand_total) - new_paid);
+  const new_status = new_remaining <= 0 ? 'full' : 'half';
+
+  await pool.query(
+    'UPDATE wholesale_orders SET paid_amount=?, remaining_amount=?, payment_status=? WHERE id=?',
+    [new_paid, new_remaining, new_status, req.params.id]
+  );
+
+  res.json({ paid_amount: new_paid, remaining_amount: new_remaining, payment_status: new_status });
+});
+
+// Return items
+wholesaleRouter.post('/:id/returns', auth, async (req, res) => {
+  const { item_id, returned_qty, reason } = req.body;
+  const [[item]] = await pool.query('SELECT * FROM wholesale_order_items WHERE id=? AND order_id=?', [item_id, req.params.id]);
+  if (!item) return res.status(404).json({ message: 'Item not found' });
+
+  const available_to_return = item.qty - item.returned_qty;
+  if (returned_qty > available_to_return) {
+    return res.status(400).json({ message: `Can only return ${available_to_return} more items` });
+  }
+
+  const refund_amount = Number(item.unit_price) * returned_qty;
+
+  await pool.query(
+    'INSERT INTO wholesale_returns (order_id, item_id, returned_qty, reason, refund_amount) VALUES (?,?,?,?,?)',
+    [req.params.id, item_id, returned_qty, reason, refund_amount]
+  );
+
+  await pool.query(
+    'UPDATE wholesale_order_items SET returned_qty=returned_qty+? WHERE id=?',
+    [returned_qty, item_id]
+  );
+
+  // Add stock back
+  await pool.query('UPDATE products SET stock=stock+? WHERE id=?', [returned_qty, item.product_id]);
+
+  // Update order totals
+  const [[order]] = await pool.query('SELECT * FROM wholesale_orders WHERE id=?', [req.params.id]);
+  const new_grand_total = Math.max(0, Number(order.grand_total) - refund_amount);
+  const new_remaining = Math.max(0, new_grand_total - Number(order.paid_amount));
+  const new_status = new_remaining <= 0 ? 'full' : Number(order.paid_amount) > 0 ? 'half' : 'pending';
+
+  await pool.query(
+    'UPDATE wholesale_orders SET grand_total=?, remaining_amount=?, payment_status=? WHERE id=?',
+    [new_grand_total, new_remaining, new_status, req.params.id]
+  );
+
+  res.json({ refund_amount, new_grand_total, new_remaining });
+});
+
+module.exports = { authRouter, shopsRouter, usersRouter, productsRouter, sellingRouter, repairRouter, dashRouter, reportsRouter, stockRouter, customersRouter, wholesaleRouter };
